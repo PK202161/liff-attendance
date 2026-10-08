@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="th"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ลงเวลา PK</title>
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--ink:#1d2a22;--muted:#68766c;--green:#06C755;--red:#d93025;--amber:#b26a00}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Sarabun","Noto Sans Thai",sans-serif}
+header{background:var(--green);color:#fff;padding:18px 16px}header small{opacity:.85}header h1{margin:4px 0 0;font-size:22px}
+main{padding:16px;max-width:480px;margin:0 auto}
+.card{background:var(--card);border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.who{font-size:17px;font-weight:600}.muted{color:var(--muted);font-size:14px}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+button{border:0;border-radius:14px;padding:22px 8px;font-size:19px;font-weight:700;color:#fff;font-family:inherit}
+button.in{background:var(--green)}button.out{background:#2f6fde}button:disabled{opacity:.45}
+#msg{font-size:16px;line-height:1.5}.ok{color:var(--green)}.err{color:var(--red)}.warn{color:var(--amber)}
+.big{font-size:30px;font-weight:700;margin:6px 0}
+a.lnk{display:block;text-align:center;padding:16px;border-radius:14px;background:#eef2ef;color:var(--ink);font-weight:600;text-decoration:none;margin-top:10px;font-size:17px}
+table{width:100%;border-collapse:collapse;font-size:15px}td{padding:6px 2px;border-bottom:1px solid #eef0ee}td:last-child{text-align:right;color:var(--muted)}
+h2{font-size:16px;margin:0 0 8px}
+</style></head>
+<body>
+<header><small>PK Technic</small><h1 id="title">ลงเวลานอกสถานที่</h1></header>
+<main>
+  <div class="card"><div class="who" id="who">กำลังเปิด…</div><div class="muted" id="today"></div></div>
+  <section id="vHub" hidden>
+    <div class="card" id="ciCard" hidden><div class="btns">
+      <button class="in" id="bIn" disabled>เข้างาน</button>
+      <button class="out" id="bOut" disabled>ออกงาน</button>
+    </div><p class="muted">ใช้เมื่ออยู่นอกสำนักงาน หรือกลับมาหลังสำนักงานปิด · บันทึกพิกัดเฉพาะตอนกดปุ่ม ไม่ติดตามตำแหน่งตลอดเวลา</p></div>
+    <div class="card" id="res" hidden><div id="msg"></div></div>
+    <div class="card" id="lnkCard" hidden><h2>เมนูอื่น</h2><div id="links"></div></div>
+    <div class="card" id="noCard" hidden><div>ฝ่ายของคุณใช้เครื่องสแกนที่สำนักงาน ยังไม่ได้เปิดลงเวลาผ่าน LINE</div></div>
+  </section>
+  <section id="vMe" hidden>
+    <div class="card"><h2>วันนี้</h2><div id="meToday"></div></div>
+    <div class="card"><h2 id="mePeriodTitle">รอบนี้</h2><div id="mePeriod"></div></div>
+    <p class="muted">ยังไม่รวมวันลา · ถ้าเวลาไม่ตรงกับที่สแกน ติดต่อฝ่ายทรัพยากรบุคคลภายในวันนั้น</p>
+  </section>
+  <div class="card" id="err" hidden></div>
+</main>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const LIFF_ID = '2010996901-HAm8bv13';
+const SUBMIT_URL = 'https://n8npkapp.pktechnic.com/webhook/att-checkin-submit';
+const ME_URL = 'https://n8npkapp.pktechnic.com/webhook/att-me';
+const $ = id => document.getElementById(id);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let idToken = '';
+$('today').textContent = new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+function show(html, cls) { $('res').hidden = false; $('msg').className = cls || ''; $('msg').innerHTML = html; }
+function fatal(m) { $('err').hidden = false; $('err').className = 'card err'; $('err').textContent = m; }
+function busy(b) { $('bIn').disabled = $('bOut').disabled = b; }
+function viewName() {
+  const q = new URLSearchParams(location.search);
+  const st = q.get('liff.state'); if (st) { const m = /view=(\w+)/.exec(st); if (m) return m[1]; }
+  return q.get('view') || 'hub';
+}
+function locate() {
+  return new Promise((ok, no) => {
+    if (!navigator.geolocation) return no(new Error('มือถือไม่รองรับการระบุตำแหน่ง'));
+    navigator.geolocation.getCurrentPosition(p => ok(p.coords), e => no(new Error(
+      e.code === 1 ? 'ไม่ได้อนุญาตตำแหน่ง — เปิดสิทธิ์ตำแหน่งให้ LINE แล้วลองใหม่' : 'หาตำแหน่งไม่สำเร็จ — ออกไปที่โล่ง เปิด GPS แล้วลองใหม่')),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  });
+}
+async function send(dir) {
+  busy(true); show('กำลังหาตำแหน่ง…');
+  try {
+    const c = await locate();
+    show('กำลังบันทึก…');
+    const r = await fetch(SUBMIT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ idToken, dir, lat: c.latitude, lng: c.longitude, acc: Math.round(c.accuracy) }) });
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok) throw new Error(j.message || 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง');
+    show(`<div>${dir === 'in' ? 'บันทึกเข้างานแล้ว' : 'บันทึกออกงานแล้ว'} ✓</div><div class="big">${esc(j.time)}</div>`
+      + `<div>${esc(j.placeText)}</div>` + (j.warn ? `<div class="warn">${esc(j.warn)}</div>` : ''), 'ok');
+  } catch (e) { show(esc(e.message), 'err'); }
+  busy(false);
+}
+$('bIn').onclick = () => send('in');
+$('bOut').onclick = () => send('out');
+function renderHub(j) {
+  $('vHub').hidden = false;
+  if (j.canCheckin) { $('ciCard').hidden = false; busy(false); }
+  const links = (j.links || []).concat([{ label: 'เวลาของฉัน', url: 'https://liff.line.me/' + LIFF_ID + '?view=me' }]);
+  $('lnkCard').hidden = false;
+  $('links').innerHTML = links.map((l, i) => `<a class="lnk" href="#" data-i="${i}">${esc(l.label)}</a>`).join('');
+  $('links').querySelectorAll('a').forEach(a => a.onclick = e => { e.preventDefault(); liff.openWindow({ url: links[a.dataset.i].url, external: false }); });
+  if (!j.canCheckin && !(j.links || []).length) $('noCard').hidden = false;
+}
+function renderMe(j) {
+  $('title').textContent = 'เวลาของฉัน'; $('vMe').hidden = false;
+  const t = j.today || [];
+  $('meToday').innerHTML = t.length ? '<table>' + t.map(x => `<tr><td>${esc(x.t)}</td><td>${esc(x.where)}</td></tr>`).join('') + '</table>'
+    : '<div class="warn">ยังไม่พบการสแกนวันนี้</div>';
+  const p = j.period || {};
+  $('mePeriodTitle').textContent = `รอบ ${esc(p.from)} – ${esc(p.to)}`;
+  const late = p.late_days ? `<span class="${p.late_minutes > p.limit ? 'err' : 'warn'}">${p.late_days} วัน รวม ${p.late_minutes} นาที</span> (เกณฑ์ใบเตือน ${p.limit} นาที)` : '<span class="ok">ไม่สาย</span>';
+  const inc = (p.incomplete || []).length ? `<span class="warn">${p.incomplete.map(esc).join(', ')}</span>` : '<span class="ok">ไม่มี</span>';
+  $('mePeriod').innerHTML = `<table><tr><td>มาทำงาน</td><td>${p.days || 0} วัน</td></tr><tr><td>สาย</td><td>${late}</td></tr><tr><td>วันที่สแกนไม่ครบ</td><td>${inc}</td></tr></table>`;
+}
+liff.init({ liffId: LIFF_ID }).then(async () => {
+  if (!liff.isLoggedIn()) return liff.login();
+  idToken = liff.getIDToken() || '';
+  if (!idToken) return fatal('เปิดจาก LINE ไม่สำเร็จ ปิดแล้วกดเมนูใหม่');
+  const view = viewName();
+  const r = await fetch(ME_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify({ idToken, view }) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) return fatal(j.message || 'โหลดข้อมูลไม่สำเร็จ');
+  $('who').textContent = `${j.name} (${j.emp_id})`;
+  view === 'me' ? renderMe(j) : renderHub(j);
+}).catch(e => fatal('เปิดหน้าไม่สำเร็จ: ' + e.message));
+</script>
+</body></html>
