@@ -31,6 +31,15 @@ h2{font-size:16px;margin:0 0 8px}
     <div class="card" id="lnkCard" hidden><h2>เมนูอื่น</h2><div id="links"></div></div>
     <div class="card" id="noCard" hidden><div>ฝ่ายของคุณใช้เครื่องสแกนที่สำนักงาน ยังไม่ได้เปิดลงเวลาผ่าน LINE</div></div>
   </section>
+  <section id="vOut" hidden>
+    <div class="card"><h2 id="outTitle">ออกนอกสถานที่</h2>
+      <div class="btns"><button class="in" id="kCo">งานบริษัท</button><button class="out" id="kPe">ธุระส่วนตัว</button></div>
+      <p class="muted" id="kHint">เลือก 1 อย่าง</p>
+      <textarea id="outNote" rows="3" style="width:100%;font-size:17px;padding:10px;border-radius:10px;border:1px solid #ccd;font-family:inherit" placeholder="ไปไหน / ทำอะไร เช่น ไปสรรพากร ยื่น ภ.พ.30"></textarea>
+      <button class="in" id="outSave" style="width:100%;margin-top:10px">บันทึก</button>
+    </div>
+    <div class="card" id="outRes" hidden></div>
+  </section>
   <section id="vMe" hidden>
     <div class="card"><h2>วันนี้</h2><div id="meToday"></div></div>
     <div class="card"><h2 id="mePeriodTitle">รอบนี้</h2><div id="mePeriod"></div></div>
@@ -50,11 +59,12 @@ $('today').textContent = new Date().toLocaleDateString('th-TH', { weekday: 'long
 function show(html, cls) { $('res').hidden = false; $('msg').className = cls || ''; $('msg').innerHTML = html; }
 function fatal(m) { $('err').hidden = false; $('err').className = 'card err'; $('err').textContent = m; }
 function busy(b) { $('bIn').disabled = $('bOut').disabled = b; }
-function viewName() {
+function params() {
   const q = new URLSearchParams(location.search);
-  const st = q.get('liff.state'); if (st) { const m = /view=(\w+)/.exec(st); if (m) return m[1]; }
-  return q.get('view') || 'hub';
+  const st = q.get('liff.state');
+  return st ? new URLSearchParams(st.replace(/^[^?]*\?/, '')) : q;
 }
+function viewName() { return params().get('view') || 'hub'; }
 function locate() {
   return new Promise((ok, no) => {
     if (!navigator.geolocation) return no(new Error('มือถือไม่รองรับการระบุตำแหน่ง'));
@@ -88,11 +98,35 @@ function renderHub(j) {
   $('links').querySelectorAll('a').forEach(a => a.onclick = e => { e.preventDefault(); liff.openWindow({ url: links[a.dataset.i].url, external: false }); });
   if (!j.canCheckin && !(j.links || []).length) $('noCard').hidden = false;
 }
+function renderOuting(j) {
+  const p = params(), id = Number(p.get('id')); let kind = p.get('kind') || '';
+  $('title').textContent = 'ออกนอกสถานที่'; $('vOut').hidden = false;
+  const o = (j.outings || []).find(x => x.id === id);
+  if (!o) { $('outTitle').textContent = 'ไม่พบรายการนี้ของวันนี้'; $('outSave').disabled = true; return; }
+  $('outTitle').textContent = `สแกนออก ${o.out} ที่${o.place} — ไปไหน?`;
+  if (o.note) $('outNote').value = o.note;
+  if (o.kind) kind = o.kind;
+  const mark = () => { $('kCo').style.opacity = kind === 'company' ? 1 : .35; $('kPe').style.opacity = kind === 'personal' ? 1 : .35;
+    $('kHint').textContent = kind === 'personal' ? 'ธุระส่วนตัว — ต้องยื่นลาระหว่างวัน (หน่วย 30 นาที) ด้วย' : kind ? '' : 'เลือก 1 อย่าง'; };
+  $('kCo').onclick = () => { kind = 'company'; mark(); }; $('kPe').onclick = () => { kind = 'personal'; mark(); }; mark();
+  $('outSave').onclick = async () => {
+    $('outSave').disabled = true;
+    const r = await fetch(ME_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ idToken, outing_id: id, kind, note: $('outNote').value }) });
+    const k = await r.json().catch(() => ({}));
+    $('outRes').hidden = false; $('outRes').className = 'card ' + (k.ok ? 'ok' : 'err'); $('outRes').textContent = k.message || 'บันทึกไม่สำเร็จ';
+    $('outSave').disabled = false;
+    if (k.ok) setTimeout(() => liff.closeWindow(), 2500);
+  };
+}
 function renderMe(j) {
   $('title').textContent = 'เวลาของฉัน'; $('vMe').hidden = false;
   const t = j.today || [];
   $('meToday').innerHTML = t.length ? '<table>' + t.map(x => `<tr><td>${esc(x.t)}</td><td>${esc(x.where)}</td></tr>`).join('') + '</table>'
     : '<div class="warn">ยังไม่พบการสแกนวันนี้</div>';
+  const os = j.outings || [];
+  if (os.length) $('meToday').innerHTML += '<h2 style="margin-top:14px">ออกนอกสถานที่วันนี้</h2><table>' + os.map(o =>
+    `<tr><td>${esc(o.out)}–${esc(o.in || '…')}</td><td>${o.note ? esc(o.note) : o.auto ? esc(o.auto) : `<a href="https://liff.line.me/${LIFF_ID}?view=outing&id=${o.id}">❓ ระบุที่ไป</a>`}</td></tr>`).join('') + '</table>';
   const p = j.period || {};
   $('mePeriodTitle').textContent = `รอบ ${esc(p.from)} – ${esc(p.to)}`;
   const late = p.late_days ? `<span class="${p.late_minutes > p.limit ? 'err' : 'warn'}">${p.late_days} วัน รวม ${p.late_minutes} นาที</span> (เกณฑ์ใบเตือน ${p.limit} นาที)` : '<span class="ok">ไม่สาย</span>';
@@ -108,7 +142,7 @@ liff.init({ liffId: LIFF_ID }).then(async () => {
   const j = await r.json().catch(() => ({}));
   if (!j.ok) return fatal(j.message || 'โหลดข้อมูลไม่สำเร็จ');
   $('who').textContent = `${j.name} (${j.emp_id})`;
-  view === 'me' ? renderMe(j) : renderHub(j);
+  view === 'me' ? renderMe(j) : view === 'outing' ? renderOuting(j) : renderHub(j);
 }).catch(e => fatal('เปิดหน้าไม่สำเร็จ: ' + e.message));
 </script>
 </body></html>
