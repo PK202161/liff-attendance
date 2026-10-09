@@ -45,6 +45,9 @@ h2{font-size:16px;margin:0 0 8px}
     <div class="card"><h2 id="mePeriodTitle">รอบนี้</h2><div id="mePeriod"></div></div>
     <p class="muted">ยังไม่รวมวันลา · ถ้าเวลาไม่ตรงกับที่สแกน ติดต่อฝ่ายทรัพยากรบุคคลภายในวันนั้น</p>
   </section>
+  <section id="vOt" hidden>
+    <div id="otBody"></div>
+  </section>
   <div class="card" id="err" hidden></div>
 </main>
 <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -52,6 +55,7 @@ h2{font-size:16px;margin:0 0 8px}
 const LIFF_ID = '2010996901-HAm8bv13';
 const SUBMIT_URL = 'https://n8npkapp.pktechnic.com/webhook/att-checkin-submit';
 const ME_URL = 'https://n8npkapp.pktechnic.com/webhook/att-me';
+const OT_URL = 'https://n8npkapp.pktechnic.com/webhook/att-ot-approve';
 const $ = id => document.getElementById(id);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let idToken = '';
@@ -133,6 +137,36 @@ function renderMe(j) {
   const inc = (p.incomplete || []).length ? `<span class="warn">${p.incomplete.map(esc).join(', ')}</span>` : '<span class="ok">ไม่มี</span>';
   $('mePeriod').innerHTML = `<table><tr><td>มาทำงาน</td><td>${p.days || 0} วัน</td></tr><tr><td>สาย</td><td>${late}</td></tr><tr><td>วันที่สแกนไม่ครบ</td><td>${inc}</td></tr></table>`;
 }
+// ---- อนุมัติ OT (เฉพาะผู้อนุมัติ · ตรวจสิทธิ์ที่ server ทุกครั้ง) ----
+async function otCall(body) {
+  const r = await fetch(OT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify({ idToken, ...body }) });
+  return r.json().catch(() => ({ ok: false, message: 'เชื่อมต่อไม่สำเร็จ' }));
+}
+const otCard = (it, full) => `<div class="card"><h2>OT #${esc(it.id)} · ${esc(it.project)}</h2>
+  <table><tr><td>วันที่</td><td>${esc(it.date)}</td></tr><tr><td>เวลา</td><td>${esc(it.start)}–${esc(it.end)}</td></tr>
+  <tr><td>ผู้ปฏิบัติงาน</td><td>${esc(it.workers)}</td></tr><tr><td>หัวหน้าชุด</td><td>${esc(it.lead)}</td></tr>
+  ${full ? `<tr><td>ประเภท</td><td>${esc(it.type)}</td></tr><tr><td>งาน</td><td>${esc(it.reason)}</td></tr>` : ''}
+  ${it.status ? `<tr><td>สถานะ</td><td class="${it.status === 'อนุมัติ' ? 'ok' : 'err'}">${esc(it.status)}</td></tr><tr><td></td><td>${esc(it.remark)}</td></tr>` : ''}</table>
+  ${full ? '' : `<a class="lnk" href="https://liff.line.me/${LIFF_ID}?view=ot&id=${encodeURIComponent(it.id)}">เปิดเพื่ออนุมัติ</a>`}</div>`;
+async function renderOt() {
+  $('title').textContent = 'อนุมัติ OT'; $('vOt').hidden = false;
+  const id = params().get('id') || '';
+  const j = await otCall({ id });
+  if (!j.ok) return fatal(j.message || 'เปิดไม่สำเร็จ');
+  if (j.mode === 'list') { $('otBody').innerHTML = j.items.length ? j.items.map(it => otCard(it, false)).join('') : '<div class="card ok">ไม่มีคำขอ OT รออนุมัติ</div>'; return; }
+  const it = j.item;
+  $('otBody').innerHTML = otCard(it, true) + (it.status ? '' : `<div class="card">
+    <textarea id="otRemark" rows="2" style="width:100%;font-size:16px;padding:10px;border-radius:10px;border:1px solid #ccd;font-family:inherit" placeholder="หมายเหตุ (ไม่บังคับ)"></textarea>
+    <div class="btns" style="margin-top:10px"><button class="in" id="otOk">อนุมัติ</button><button class="out" id="otNo" style="background:var(--red)">ไม่อนุมัติ</button></div>
+    <p class="muted">ระบบบันทึกชื่อของคุณเป็นผู้อนุมัติ · อนุมัติแล้วเปลี่ยนไม่ได้</p></div>`) +
+    `<a class="lnk" href="https://liff.line.me/${LIFF_ID}?view=ot">รายการรออนุมัติทั้งหมด</a>`;
+  const act = async action => {
+    $('otOk').disabled = $('otNo').disabled = true;
+    const k = await otCall({ id, action, remark: $('otRemark').value });
+    $('otBody').innerHTML = (k.item ? otCard(k.item, true) : '') + `<div class="card ${k.ok ? 'ok' : 'err'}">${esc(k.message || (k.ok ? 'บันทึกแล้ว' : 'ไม่สำเร็จ'))}</div>`;
+  };
+  if (!it.status) { $('otOk').onclick = () => act('approve'); $('otNo').onclick = () => confirm('ไม่อนุมัติคำขอนี้?') && act('reject'); }
+}
 liff.init({ liffId: LIFF_ID }).then(async () => {
   if (!liff.isLoggedIn()) return liff.login();
   idToken = liff.getIDToken() || '';
@@ -142,7 +176,7 @@ liff.init({ liffId: LIFF_ID }).then(async () => {
   const j = await r.json().catch(() => ({}));
   if (!j.ok) return fatal(j.message || 'โหลดข้อมูลไม่สำเร็จ');
   $('who').textContent = `${j.name} (${j.emp_id})`;
-  view === 'me' ? renderMe(j) : view === 'outing' ? renderOuting(j) : renderHub(j);
+  view === 'me' ? renderMe(j) : view === 'outing' ? renderOuting(j) : view === 'ot' ? renderOt() : renderHub(j);
 }).catch(e => fatal('เปิดหน้าไม่สำเร็จ: ' + e.message));
 </script>
 </body></html>
